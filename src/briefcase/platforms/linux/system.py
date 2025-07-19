@@ -999,7 +999,7 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
             "Priority: optional",
             f"Maintainer: {app.author} <{app.author_email}>",
             "Standards-Version: 4.5.0",
-            "Build-Depends: debhelper (>= 9)",
+            "Build-Depends: debhelper (>= 13)",
             "",
             f"Package: {app.app_name}",
             f"Architecture: {self.deb_abi(app)}",
@@ -1009,21 +1009,30 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
         (debian_dir / "control").write_text(control)
 
         # rules
-        rules = "#!/usr/bin/make -f\n%:\n\tdh $@"
+        rules = "\n".join([
+            "#!/usr/bin/make -f",
+            "",
+            "%:",
+            "\tdh $@",
+            "",
+            "override_dh_auto_install:",
+            "\tcp -a usr debian/{}/".format(app.app_name),
+        ])
         (debian_dir / "rules").write_text(rules)
         (debian_dir / "rules").chmod(0o755)
 
         # changelog
         changelog = f"""{app.app_name} ({app.version}-1) unstable; urgency=low
 
-                      * Auto-generated build.
-                
-                     -- {app.author} <{app.author_email}>  {format_datetime(datetime.datetime.now())}
-                    """
+          * Auto-generated build.
+
+         -- {app.author} <{app.author_email}>  {format_datetime(datetime.datetime.now())}
+
+        """
         (debian_dir / "changelog").write_text(changelog)
 
         # compat
-        (debian_dir / "compat").write_text("9")
+        (debian_dir / "compat").write_text("13")
 
         # copyright
         copyright_text = f"""Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
