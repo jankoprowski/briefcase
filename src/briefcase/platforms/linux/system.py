@@ -17,7 +17,7 @@ from briefcase.commands import (
 )
 from briefcase.commands.convert import find_changelog_filename
 from briefcase.config import AppConfig, merge_config
-from briefcase.exceptions import BriefcaseCommandError, UnsupportedHostError
+from briefcase.exceptions import BriefcaseCommandError, UnsupportedHostError, InputDisabled
 from briefcase.integrations.docker import Docker, DockerAppContext
 from briefcase.integrations.subprocess import NativeAppContext
 from briefcase.platforms.linux import (
@@ -968,12 +968,14 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
 
     def _package_deb(self, app: AppConfig, **kwargs):
         self.console.info("Building signed .deb package...", prefix=app.app_name)
-        self.gpg_key_id = "ci@example.com"
+
+        if not self.console.input_enabled and kwargs.get('identity'):
+            raise InputDisabled()
 
         debian_dir = self.package_path(app) / "debian"
         if debian_dir.exists():
             self.tools.shutil.rmtree(debian_dir)
-        debian_dir.mkdir(parents=True)
+        debian_dir.mkdir(parents=True, mode=0o755)
 
         # Write control
         control = "\n".join([
@@ -1013,20 +1015,26 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
 
         # copyright
         copyright_text = f"""Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-    Upstream-Name: {app.app_name}
-    Source: {app.url}
-    License: MIT
-    """
+                        Upstream-Name: {app.app_name}
+                        Source: {app.url}
+                        License: MIT
+                        """
         (debian_dir / "copyright").write_text(copyright_text)
+
+        cmd = ["dpkg-buildpackage"]
+
+        if identity := kwargs.get("identity", ""):
+            cmd += [f"-k{identity}"]
+        else:
+            cmd += ["-uc", "-us"]
+
+        breakpoint()
 
         # Build using dpkg-buildpackage
         with self.console.wait_bar("Building signed Debian package..."):
             try:
                 self.tools[app].app_context.run(
-                    [
-                        "dpkg-buildpackage",
-                        "-k" + self.gpg_key_id
-                    ],
+                    cmd,
                     check=True,
                     cwd=self.package_path(app),
                 )
