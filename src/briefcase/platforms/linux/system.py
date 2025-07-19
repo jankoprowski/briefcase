@@ -967,79 +967,73 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
             )
 
     def _package_deb(self, app: AppConfig, **kwargs):
-        self.console.info("Building .deb package...", prefix=app.app_name)
+        self.console.info("Building signed .deb package...", prefix=app.app_name)
+        self.gpg_key_id = "ci@example.com"
 
-        # The long description *must* exist.
-        if app.long_description is None:
-            raise BriefcaseCommandError(
-                "App configuration does not define `long_description`. "
-                "Debian projects require a long description."
-            )
+        debian_dir = self.package_path(app) / "debian"
+        if debian_dir.exists():
+            self.tools.shutil.rmtree(debian_dir)
+        debian_dir.mkdir(parents=True)
 
-        # Write the Debian metadata control file.
-        with self.console.wait_bar("Write Debian package control file..."):
-            DEBIAN_path = self.package_path(app) / "DEBIAN"
+        # Write control
+        control = "\n".join([
+            f"Source: {app.app_name}",
+            "Section: utils",
+            "Priority: optional",
+            f"Maintainer: {app.author} <{app.author_email}>",
+            "Standards-Version: 4.5.0",
+            "Build-Depends: debhelper (>= 9)",
+            "",
+            f"Package: {app.app_name}",
+            f"Architecture: any",
+            "Depends: ${shlibs:Depends}, ${misc:Depends}, " +
+            f"libc6 (>= {app.glibc_version}), libpython{app.python_version_tag}" +
+            (", " + ", ".join(getattr(app, "system_runtime_requires", [])) if getattr(app, "system_runtime_requires",
+                                                                                      []) else ""),
+            f"Description: {app.description}\n {debian_multiline_description(app.long_description)}",
+        ])
+        (debian_dir / "control").write_text(control)
 
-            if DEBIAN_path.exists():
-                self.tools.shutil.rmtree(DEBIAN_path)
+        # rules
+        rules = "#!/usr/bin/make -f\n%:\n\tdh $@"
+        (debian_dir / "rules").write_text(rules)
+        (debian_dir / "rules").chmod(0o755)
 
-            DEBIAN_path.mkdir()
-            # dpkg-dep requires "DEBIAN" directory is >=0755 and <=0775
-            DEBIAN_path.chmod(0o755)
+        # changelog
+        changelog = f"""{app.app_name} ({app.version}-1) unstable; urgency=low
 
-            # Add runtime package dependencies. App config has been finalized,
-            # so this will be the target-specific definition, if one exists.
-            # libc6 is added because lintian complains without it, even though
-            # it's a dependency of the thing we *do* care about - python.
-            system_runtime_requires = ", ".join(
-                [
-                    f"libc6 (>={app.glibc_version})",
-                    f"libpython{app.python_version_tag}",
-                ]
-                + getattr(app, "system_runtime_requires", [])
-            )
+      * Auto-generated build.
 
-            with (DEBIAN_path / "control").open("w", encoding="utf-8") as f:
-                f.write(
-                    "\n".join(
-                        [
-                            f"Package: {app.app_name}",
-                            f"Version: {app.version}",
-                            f"Architecture: {self.deb_abi(app)}",
-                            f"Maintainer: {app.author} <{app.author_email}>",
-                            f"Homepage: {app.url}",
-                            f"Description: {app.description}",
-                            f" {debian_multiline_description(app.long_description)}",
-                            f"Depends: {system_runtime_requires}",
-                            f"Section: {getattr(app, 'system_section', 'utils')}",
-                            "Priority: optional\n",
-                        ]
-                    )
-                )
+     -- {app.author} <{app.author_email}>  Fri, 19 Jul 2024 12:00:00 +0000
+    """
+        (debian_dir / "changelog").write_text(changelog)
 
-        with self.console.wait_bar("Building Debian package..."):
+        # compat
+        (debian_dir / "compat").write_text("9")
+
+        # copyright
+        copyright_text = f"""Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+    Upstream-Name: {app.app_name}
+    Source: {app.url}
+    License: MIT
+    """
+        (debian_dir / "copyright").write_text(copyright_text)
+
+        # Build using dpkg-buildpackage
+        with self.console.wait_bar("Building signed Debian package..."):
             try:
-                # Build the dpkg.
                 self.tools[app].app_context.run(
                     [
-                        "dpkg-deb",
-                        "--build",
-                        "--root-owner-group",
-                        self.package_path(app),
+                        "dpkg-buildpackage",
+                        "-k" + self.gpg_key_id
                     ],
                     check=True,
-                    cwd=self.bundle_path(app),
+                    cwd=self.package_path(app),
                 )
             except subprocess.CalledProcessError as e:
                 raise BriefcaseCommandError(
-                    f"Error while building .deb package for {app.app_name}."
+                    f"Error while building signed .deb package for {app.app_name}."
                 ) from e
-
-            # Move the deb file to its final location
-            self.tools.shutil.move(
-                self.package_path(app).parent / f"{self.package_path(app).name}.deb",
-                self.distribution_path(app),
-            )
 
     def _package_rpm(self, app: AppConfig, **kwargs):  # pragma: no-cover-if-is-windows
         self.console.info("Building .rpm package...", prefix=app.app_name)
