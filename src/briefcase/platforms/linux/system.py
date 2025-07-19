@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+import datetime
+from email.utils import format_datetime
 
 from briefcase.commands import (
     BuildCommand,
@@ -969,6 +971,7 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
     def _package_deb(self, app: AppConfig, **kwargs):
         self.console.info("Building signed .deb package...", prefix=app.app_name)
 
+        # --no-input and --identity are mutually exclusive
         if not self.console.input_enabled and kwargs.get('identity'):
             raise InputDisabled()
 
@@ -976,6 +979,18 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
         if debian_dir.exists():
             self.tools.shutil.rmtree(debian_dir)
         debian_dir.mkdir(parents=True, mode=0o755)
+
+        # Add runtime package dependencies. App config has been finalized,
+        # so this will be the target-specific definition, if one exists.
+        # libc6 is added because lintian complains without it, even though
+        # it's a dependency of the thing we *do* care about - python.
+        system_runtime_requires = ", ".join(
+            [
+                f"libc6 (>={app.glibc_version})",
+                f"libpython{app.python_version_tag}",
+            ]
+            + getattr(app, "system_runtime_requires", [])
+        )
 
         # Write control
         control = "\n".join([
@@ -987,11 +1002,8 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
             "Build-Depends: debhelper (>= 9)",
             "",
             f"Package: {app.app_name}",
-            f"Architecture: any",
-            "Depends: ${shlibs:Depends}, ${misc:Depends}, " +
-            f"libc6 (>= {app.glibc_version}), libpython{app.python_version_tag}" +
-            (", " + ", ".join(getattr(app, "system_runtime_requires", [])) if getattr(app, "system_runtime_requires",
-                                                                                      []) else ""),
+            f"Architecture: {self.deb_abi(app)}",
+            f"Depends: {system_runtime_requires}",
             f"Description: {app.description}\n {debian_multiline_description(app.long_description)}",
         ])
         (debian_dir / "control").write_text(control)
@@ -1004,10 +1016,10 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
         # changelog
         changelog = f"""{app.app_name} ({app.version}-1) unstable; urgency=low
 
-      * Auto-generated build.
-
-     -- {app.author} <{app.author_email}>  Fri, 19 Jul 2024 12:00:00 +0000
-    """
+                      * Auto-generated build.
+                
+                     -- {app.author} <{app.author_email}>  {format_datetime(datetime.datetime.now())}
+                    """
         (debian_dir / "changelog").write_text(changelog)
 
         # compat
@@ -1017,18 +1029,15 @@ class LinuxSystemPackageCommand(LinuxSystemMixin, PackageCommand):
         copyright_text = f"""Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
                         Upstream-Name: {app.app_name}
                         Source: {app.url}
-                        License: MIT
+                        License: {app.license}
                         """
         (debian_dir / "copyright").write_text(copyright_text)
 
         cmd = ["dpkg-buildpackage"]
-
         if identity := kwargs.get("identity", ""):
             cmd += [f"-k{identity}"]
         else:
             cmd += ["-uc", "-us"]
-
-        breakpoint()
 
         # Build using dpkg-buildpackage
         with self.console.wait_bar("Building signed Debian package..."):
